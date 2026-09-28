@@ -1,0 +1,46 @@
+bare-bones v1 plan:
+1. heuristic function to eval given boardstate
+2. minimax alg with alpha beta pruning
+3. genetic algorithm to tune parameters for heuristic
+
+more improvements:
+- VCF/VCT threat space search (do alongside the minimax)
+- transposition table (basically just memoization)
+
+Group these into four layers: core state, search support, game-running, and testing infrastructure.
+
+**Core board state & rules**
+- `init_board()` — set up an empty 15x15 board, reset side-to-move, move count
+- `is_in_bounds(cell)` / `is_empty(cell)` — basic legality checks
+- `get_legal_moves()` — all empty cells (used mainly at the very start of the game, or as a fallback)
+- `get_candidate_moves()` — restricted move list (cells within radius ~2 of existing stones), used by search instead of `get_legal_moves()` once the board isn't empty
+- `make_move(cell)` — place a stone, flip side to move, push the move onto a history stack, and trigger the incremental updates below (eval delta, Zobrist hash, per-line bitmasks)
+- `undo_move()` — pop the history stack and reverse everything `make_move` did, restoring the exact prior state
+- `check_win(last_move)` — scan only the 4 lines through the just-placed stone for 5-in-a-row; doing this relative to the last move (not the whole board) is cheap and exactly mirrors the incremental eval approach
+- `check_draw()` — board full, no winner
+- `is_game_over()` / `get_result()` — combine the above into a single terminal-state check the search can call at every node
+- A decision on rule variant (freestyle vs. standard/Renju) — this affects `check_win` (does 6-in-a-row count as a win, i.e. "overline"?) and possibly `get_legal_moves` (Renju restricts Black's opening moves to prevent an unfair first-move advantage). Pick one and bake it into these functions.
+
+**Search support (built on top of the state layer)**
+- `evaluate(state)` — the static heuristic eval we've been designing
+- `search(depth, alpha, beta)` — the alpha-beta minimax function itself
+- `iterative_deepening(time_budget)` — driver that calls `search` at increasing depths until time runs out, returns the best move found
+- `zobrist_hash` init + incremental update hooked into `make_move`/`undo_move`
+- transposition table `get`/`store` — keyed by the Zobrist hash, storing best score/move/depth for a position
+- `order_moves(candidates)` — move ordering for better alpha-beta pruning (e.g., try last iteration's best move first, or sort by static pattern score)
+- `vcf_search()` / `vct_search()` — the threat-space search discussed earlier, called either standalone near the end of search or as a check inside eval for forced-win detection
+
+**Game-running / driver**
+- `play_game(player1, player2)` — alternates `make_move` calls between two engines (or an engine and a human), checks `is_game_over()` after each move, returns the result and full move list
+- `get_human_move()` — simple input handler if you want to play against it yourself for sanity-checking
+- `run_self_play_batch(n_games, engineA, engineB)` — runs many games for tuning/testing, tracks win/loss/draw counts (needed for the hill-climbing/SPRT tuning discussed earlier)
+- move-time budgeting — enforce a per-move or per-game time limit so `iterative_deepening` knows when to stop
+
+**Testing / debugging utilities** (don't skip these — they save you from subtle bugs later)
+- `print_board()` — text visualization, essential for manual sanity checks
+- `perft(depth)` — count total legal move sequences to a given depth from a known position; compare against a hand-verified expected count to catch move-generation bugs (standard technique borrowed from chess engine testing)
+- pattern-table unit tests — feed known hand-constructed positions (e.g., a board with an obvious open three) into `evaluate()` and assert the score matches expectations
+- win-detection edge case tests — corners, edges, exactly-5 vs. overline if you're using standard rules where overlines don't count
+- game log / export — save move sequences (and optionally position+outcome pairs) to a file, which becomes your dataset if you later do Texel-style weight tuning
+
+Practical build order: state layer first (with `print_board` for debugging) → get `check_win`/`check_draw` solid with tests → basic `evaluate` → plain minimax without alpha-beta → add alpha-beta → add iterative deepening + transposition table → add self-play driver → only then start tuning weights. Each stage is independently testable before you add the next.

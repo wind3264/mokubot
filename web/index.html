@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mokubot</title>
+<meta name="description" content="Play freestyle gomoku against mokubot, a small alpha-beta engine.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23111'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<main>
+  <header>
+    <h1>mokubot</h1>
+    <p id="status" aria-live="polite">&nbsp;</p>
+  </header>
+  <svg id="board" viewBox="0 0 640 640" role="img" aria-label="Gomoku board"></svg>
+  <nav>
+    <button type="button" id="new-black">Play as black</button>
+    <button type="button" id="new-white">Play as white</button>
+    <button type="button" id="undo">Undo</button>
+  </nav>
+  <footer>
+    <p>Freestyle gomoku on a 15&times;15 board: get five or more in a row. Black moves first.</p>
+    <p><a href="https://github.com/wind3264/mokubot">Source</a></p>
+  </footer>
+</main>
+</body>
+</html>
