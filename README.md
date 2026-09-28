@@ -15,9 +15,10 @@ The Python code is the reference engine, used for testing and tuning.
   A shape is defined by what one more stone could do, so the classification is exact rather than a list of hand-written patterns.
 - `game.py` - board state and rules; keeps line keys, shape counts, candidate moves and the Zobrist hash up to date incrementally on every move.
 - `eval.py` - static evaluation as weighted shape counts, with separate weights for the side to move and its opponent.
-- `minimax.py` - negamax alpha-beta (PVS) with iterative deepening, a transposition table, threat-aware move generation and VCF (victory by continuous fours) search at the root and at leaves.
+- `minimax.py` - negamax alpha-beta (PVS) with iterative deepening, a transposition table, threat-aware move generation, VCF (victory by continuous fours) search at the root and at leaves, and VCT (victory by continuous threats) search at the root.
 - `play.py` - human vs engine on the command line, engine vs engine games and self-play batches.
 - `tune.py` - genetic algorithm over the evaluation weights.
+  `tune_log.txt` and `tuned_weights.json` record the run behind the current weights (22 generations of 16 genomes at depth 2); they beat the hand-set starting weights 68% at depth 4.
 - `web/` - the website: `engine.js` is the port, `worker.js` runs it off the main thread and `app.js` is the UI.
 
 ## Running

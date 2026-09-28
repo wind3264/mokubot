@@ -323,10 +323,11 @@ export class Board {
 
 const SCORED_SHAPES = [ONE, CLOSED_TWO, TWO, CLOSED_THREE, THREE, OPEN_THREE];
 
+// tuned weights, see eval.py
 export const DEFAULT_WEIGHTS = [
-  10, 50, 100, 150, 800, 1000,
-  12, 58, 115, 172, 920, 1150,
-  5000, 20000,
+  20, 55, 240, 195, 2077, 1085,
+  4, 21, 131, 249, 483, 868,
+  6174, 30398,
 ];
 
 export function evaluate(board, weights = DEFAULT_WEIGHTS) {
@@ -351,6 +352,11 @@ const INF = MATE + 1;
 const EXACT = 0, LOWER = 1, UPPER = 2;
 const TIMEOUT = { timeout: true };
 const VCT_LIMIT = { vctLimit: true };
+const VCF_LIMIT = { vcfLimit: true };
+// node budgets for VCF: on crowded boards the number of four sequences can
+// explode, so an unfinished VCF counts as no VCF found
+const ROOT_VCF_NODES = 20000;
+const VCF_NODES = 1000;
 
 const mateToTT = (score, ply) => score > MATE_BOUND ? score + ply : score < -MATE_BOUND ? score - ply : score;
 const mateFromTT = (score, ply) => score > MATE_BOUND ? score - ply : score < -MATE_BOUND ? score + ply : score;
@@ -371,6 +377,7 @@ export class Engine {
     this.vctFail = new Map();
     this.tt = new Map();
     this.vcfFail = new Map();
+    this.vcfLeft = Infinity;
   }
 
   bestMove(board, timeLimit = this.timeLimit, maxDepth = this.maxDepth) {
@@ -396,7 +403,7 @@ export class Engine {
     let best = moves[0];
     if (moves.length === 1) return best;
     try {
-      const win = this.vcfSearch(this.vcfDepth * 2);
+      const win = this.vcf(this.vcfDepth * 2, ROOT_VCF_NODES);
       if (win !== null) { this.info.score = VCF_WIN; return win; }
       if (this.vctDepth) {
         // bounded by nodes rather than time so results do not depend on speed
@@ -473,7 +480,7 @@ export class Engine {
       moves = threats;
       childDepth = depth;
     } else if (depth <= 0) {
-      if (this.leafVcf && this.hasFourMoves(me) && this.vcfSearch(this.vcfDepth) !== null) return VCF_WIN - ply;
+      if (this.leafVcf && this.hasFourMoves(me) && this.vcf(this.vcfDepth, VCF_NODES) !== null) return VCF_WIN - ply;
       return evaluate(board, this.weights);
     } else {
       moves = this.orderMoves(ttMove, false);
@@ -557,6 +564,21 @@ export class Engine {
     return found.map(key => 255 - (((key % 256) + 256) % 256));
   }
 
+  // vcfSearch limited to budget nodes; null if the budget runs out
+  vcf(depth, budget) {
+    const board = this.board, start = board.moves.length;
+    this.vcfLeft = budget;
+    try {
+      return this.vcfSearch(depth);
+    } catch (e) {
+      if (e !== VCF_LIMIT) throw e;
+      while (board.moves.length > start) board.unplay();
+      return null;
+    } finally {
+      this.vcfLeft = Infinity;
+    }
+  }
+
   vcfSearch(depth) {
     const board = this.board;
     const me = board.side, op = 3 - me;
@@ -572,6 +594,7 @@ export class Engine {
     if (threats.length) moves = threats.filter(m => moves.includes(m));
     for (const m of moves) {
       if ((++this.nodes & 1023) === 0 && now() > this.deadline) throw TIMEOUT;
+      if (--this.vcfLeft < 0) throw VCF_LIMIT;
       board.play(m);
       const wins = board.winCells(me);
       if (wins.length >= 2) { board.unplay(); return m; }
@@ -603,7 +626,7 @@ export class Engine {
       board.unplay();
       return ok ? threats[0] : null;
     }
-    const vcf = this.vcfSearch(this.vcfDepth);
+    const vcf = this.vcf(this.vcfDepth, VCF_NODES);
     if (vcf !== null) return vcf;
     if (depth <= 0) return null;
     const hash = board.hash;

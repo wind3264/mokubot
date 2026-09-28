@@ -121,3 +121,24 @@ def test_finds_a_double_three_by_vct():
     assert e.vct_attack(4) is not None
     move, e = best(b)
     assert e.info.get("vct")
+
+
+def test_vcf_is_bounded_on_a_crowded_board():
+    # many closed threes for both sides: the unbounded search can take minutes
+    import random
+    from game import Board
+    rng = random.Random(3)
+    b = Board()
+    while len(b.moves) < 110:
+        b.play(rng.choice(b.candidates()))
+        if b.last_move_won():
+            b.unplay()
+            b.unplay()
+    e = Engine()
+    e.board = b
+    e.nodes = 0
+    e.deadline = float("inf")
+    moves = list(b.moves)
+    e.vcf(30, 500)
+    assert e.nodes <= 501
+    assert b.moves == moves

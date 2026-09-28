@@ -39,10 +39,14 @@ WEIGHT_NAMES = (["own_" + n for n in ("one", "closed_two", "two", "closed_three"
                 + ["opp_" + n for n in ("one", "closed_two", "two", "closed_three", "three", "open_three")]
                 + ["own_threat", "opp_fork"])
 
+# tuned by tune.py (see tuned_weights.json): the geometric mean of the best
+# genome of the last 8 generations. the hand-set starting point from
+# eval_strategy.md was [10, 50, 100, 150, 800, 1000, 12, 58, 115, 172, 920,
+# 1150, 5000, 20000]; these weights beat it 68% at depth 4.
 DEFAULT_WEIGHTS = [
-    10, 50, 100, 150, 800, 1000,
-    12, 58, 115, 172, 920, 1150,
-    5000, 20000,
+    20, 55, 240, 195, 2077, 1085,
+    4, 21, 131, 249, 483, 868,
+    6174, 30398,
 ]
 
 

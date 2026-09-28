@@ -9,6 +9,10 @@ from patterns import CLOSED_THREE, OPEN_THREE, POW3, THREE, line_info
 MATE = 1_000_000_000
 MATE_BOUND = MATE - 10_000  # scores beyond this are forced wins or losses
 VCF_WIN = MATE - 5_000      # leaf VCF wins rank below exact short mates
+# node budgets for VCF: on crowded boards the number of four sequences can
+# explode, so an unfinished VCF counts as no VCF found
+ROOT_VCF_NODES = 20_000
+VCF_NODES = 1_000
 INF = MATE + 1
 
 EXACT, LOWER, UPPER = 0, 1, 2
@@ -72,6 +76,10 @@ class VctLimit(Exception):
     pass
 
 
+class VcfLimit(Exception):
+    pass
+
+
 def _mate_to_tt(score, ply):
     if score > MATE_BOUND:
         return score + ply
@@ -103,6 +111,7 @@ class Engine:
         self.vct_fail = {}
         self.tt = {}
         self.vcf_fail = {}
+        self.vcf_left = float("inf")
 
     # ---- public ----
 
@@ -141,7 +150,7 @@ class Engine:
         if len(moves) == 1:
             return best
         try:
-            win = self.vcf_search(self.vcf_depth * 2)
+            win = self.vcf(self.vcf_depth * 2, ROOT_VCF_NODES)
             if win is not None:
                 self.info["score"] = VCF_WIN
                 return win
@@ -222,7 +231,7 @@ class Engine:
             moves = threats
             child_depth = depth  # forced replies do not use up depth
         elif depth <= 0:
-            if self.leaf_vcf and self._has_four_moves(me) and self.vcf_search(self.vcf_depth) is not None:
+            if self.leaf_vcf and self._has_four_moves(me) and self.vcf(self.vcf_depth, VCF_NODES) is not None:
                 return VCF_WIN - ply
             return evaluate(board, self.weights)
         else:
@@ -308,6 +317,20 @@ class Engine:
         found.sort(key=lambda t: (-t[0], t[1]))
         return [idx for _, idx in found]
 
+    def vcf(self, depth, budget):
+        """vcf_search limited to budget nodes; None if the budget runs out."""
+        board = self.board
+        start = len(board.moves)
+        self.vcf_left = budget
+        try:
+            return self.vcf_search(depth)
+        except VcfLimit:
+            while len(board.moves) > start:
+                board.unplay()
+            return None
+        finally:
+            self.vcf_left = float("inf")
+
     def vcf_search(self, depth):
         """A first move of a victory by continuous fours for the side to
         move, or None. depth is the number of attacking moves allowed."""
@@ -333,6 +356,9 @@ class Engine:
             self.nodes += 1
             if self.nodes & 1023 == 0 and time.perf_counter() > self.deadline:
                 raise Timeout
+            self.vcf_left -= 1
+            if self.vcf_left < 0:
+                raise VcfLimit
             board.play(m)
             wins = board.win_cells(me)
             if len(wins) >= 2:
@@ -367,7 +393,7 @@ class Engine:
             ok = self.vct_defend(depth)
             board.unplay()
             return threats[0] if ok else None
-        vcf = self.vcf_search(self.vcf_depth)
+        vcf = self.vcf(self.vcf_depth, VCF_NODES)
         if vcf is not None:
             return vcf
         if depth <= 0:
