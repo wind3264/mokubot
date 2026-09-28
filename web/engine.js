@@ -113,7 +113,8 @@ function moveTable(info) {
   const { key, length } = info;
   const t = { gain: [null, new Int32Array(length), new Int32Array(length)],
     blocks: [null, new Int8Array(length), new Int8Array(length)],
-    four: [null, new Int8Array(length), new Int8Array(length)] };
+    four: [null, new Int8Array(length), new Int8Array(length)],
+    three: [null, new Int8Array(length), new Int8Array(length)] };
   let rest = key;
   for (let pos = 0; pos < length; pos++, rest = Math.floor(rest / 3)) {
     if (rest % 3) continue;
@@ -122,6 +123,7 @@ function moveTable(info) {
       t.gain[c][pos] = after.value[c] - info.value[c];
       t.blocks[c][pos] = info.threes[3 - c] - after.threes[3 - c];
       t.four[c][pos] = after.wins[c] ? 1 : 0;
+      t.three[c][pos] = after.threes[c] > info.threes[c] ? 1 : 0;
     }
   }
   return (info.table = t);
@@ -348,6 +350,7 @@ export const VCF_WIN = MATE - 5000;
 const INF = MATE + 1;
 const EXACT = 0, LOWER = 1, UPPER = 2;
 const TIMEOUT = { timeout: true };
+const VCT_LIMIT = { vctLimit: true };
 
 const mateToTT = (score, ply) => score > MATE_BOUND ? score + ply : score < -MATE_BOUND ? score - ply : score;
 const mateFromTT = (score, ply) => score > MATE_BOUND ? score - ply : score < -MATE_BOUND ? score + ply : score;
@@ -356,13 +359,16 @@ const byScore = (a, b) => b[0] - a[0] || a[1] - b[1];
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 export class Engine {
-  constructor({ weights = DEFAULT_WEIGHTS, maxDepth = 64, timeLimit = 2.0, beam = 12, vcfDepth = 10, leafVcf = true } = {}) {
+  constructor({ weights = DEFAULT_WEIGHTS, maxDepth = 64, timeLimit = 2.0, beam = 12, vcfDepth = 10, leafVcf = true, vctDepth = 4, vctNodes = 20000 } = {}) {
     this.weights = weights;
     this.maxDepth = maxDepth;
     this.timeLimit = timeLimit;
     this.beam = beam;
     this.vcfDepth = vcfDepth;
     this.leafVcf = leafVcf;
+    this.vctDepth = vctDepth;
+    this.vctNodes = vctNodes;
+    this.vctFail = new Map();
     this.tt = new Map();
     this.vcfFail = new Map();
   }
@@ -392,6 +398,18 @@ export class Engine {
     try {
       const win = this.vcfSearch(this.vcfDepth * 2);
       if (win !== null) { this.info.score = VCF_WIN; return win; }
+      if (this.vctDepth) {
+        // bounded by nodes rather than time so results do not depend on speed
+        this.vctLimit = this.nodes + this.vctNodes;
+        let vct = null;
+        try {
+          vct = this.vctAttack(this.vctDepth);
+        } catch (e) {
+          if (e !== VCT_LIMIT) throw e;
+          while (board.moves.length > this.rootLen) board.unplay();
+        }
+        if (vct !== null) { this.info.score = VCF_WIN; this.info.vct = true; return vct; }
+      }
       for (let depth = 1; depth <= maxDepth; depth++) {
         let bestScore = -INF, alpha = -INF;
         const scored = [];
@@ -565,5 +583,97 @@ export class Engine {
     }
     this.vcfFail.set(hash, depth);
     return null;
+  }
+
+  // ---- victory by continuous threats ----
+  // attacker (side to move) plays fours and threes; the defender must answer
+  // every three with a block or a counter four. returns the first move of a
+  // win or null
+
+  vctAttack(depth) {
+    const board = this.board;
+    const me = board.side, op = 3 - me;
+    const mine = board.winCells(me);
+    if (mine.length) return mine[0];
+    const threats = board.winCells(op);
+    if (threats.length >= 2) return null;
+    if (threats.length) {
+      board.play(threats[0]);
+      const ok = this.vctDefend(depth);
+      board.unplay();
+      return ok ? threats[0] : null;
+    }
+    const vcf = this.vcfSearch(this.vcfDepth);
+    if (vcf !== null) return vcf;
+    if (depth <= 0) return null;
+    const hash = board.hash;
+    const known = this.vctFail.get(hash);
+    if (known !== undefined && known >= depth) return null;
+    for (const m of this.threatMoves(me)) {
+      if (++this.nodes > this.vctLimit) throw VCT_LIMIT;
+      board.play(m);
+      const ok = this.vctDefend(depth - 1);
+      board.unplay();
+      if (ok) return m;
+    }
+    this.vctFail.set(hash, depth);
+    return null;
+  }
+
+  // defender to move against pending threats; true if every defense loses
+  vctDefend(depth) {
+    const board = this.board;
+    const me = board.side, att = 3 - me;
+    if (board.hasFour(me)) return false;
+    const wins = board.winCells(att);
+    if (wins.length >= 2) return true;
+    let defenses;
+    if (wins.length) {
+      defenses = wins;
+    } else {
+      const c = board.counts[att];
+      if (!(c[THREE] + c[OPEN_THREE])) return false;
+      defenses = this.defenseMoves(me);
+    }
+    for (const d of defenses) {
+      if (++this.nodes > this.vctLimit) throw VCT_LIMIT;
+      board.play(d);
+      const lost = this.vctAttack(depth) !== null;
+      board.unplay();
+      if (!lost) return false;
+    }
+    return true;
+  }
+
+  // cells where color makes a four or a new three, best first
+  threatMoves(color) {
+    const board = this.board, infos = board.lineInfos;
+    const keys = [];
+    for (const idx of board.candidates()) {
+      let gain = 0, threat = 0;
+      const lines = CELL_LINES[idx];
+      for (let k = 0; k < lines.length; k += 3) {
+        const t = moveTable(infos[lines[k]]), pos = lines[k + 1];
+        gain += t.gain[color][pos];
+        threat |= t.four[color][pos] | t.three[color][pos];
+      }
+      if (threat) keys.push(gain * 256 + 255 - idx);
+    }
+    keys.sort((a, b) => b - a);
+    return keys.map(key => 255 - (((key % 256) + 256) % 256));
+  }
+
+  // cells where color breaks an opponent three or makes a four
+  defenseMoves(color) {
+    const board = this.board, infos = board.lineInfos;
+    const out = [];
+    for (const idx of board.candidates()) {
+      const lines = CELL_LINES[idx];
+      for (let k = 0; k < lines.length; k += 3) {
+        const t = moveTable(infos[lines[k]]), pos = lines[k + 1];
+        if (t.blocks[color][pos] > 0 || t.four[color][pos]) { out.push(idx); break; }
+      }
+    }
+    return out;
   }
 }

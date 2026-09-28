@@ -4,7 +4,7 @@ import time
 
 from eval import DEFAULT_WEIGHTS, evaluate
 from game import CELL_LINES, LINE_LEN, SIZE
-from patterns import CLOSED_THREE, OPEN_THREE, THREE, line_info
+from patterns import CLOSED_THREE, OPEN_THREE, POW3, THREE, line_info
 
 MATE = 1_000_000_000
 MATE_BOUND = MATE - 10_000  # scores beyond this are forced wins or losses
@@ -34,7 +34,41 @@ def line_summary(key, length):
     return s
 
 
+_table_cache = {}
+
+
+def move_table(key, length):
+    """What a stone at each empty position of the line would do.
+
+    Returns (gain, blocks, four, three), each indexed [color][pos]: the
+    ordering value color gains, the opponent threes it breaks, whether it
+    gives color a five point and whether it gives color a new three.
+    """
+    ck = key * 16 + length
+    t = _table_cache.get(ck)
+    if t is None:
+        before = line_summary(key, length)
+        t = ([None, [0] * length, [0] * length], [None, [0] * length, [0] * length],
+             [None, [0] * length, [0] * length], [None, [0] * length, [0] * length])
+        rest = key
+        for pos in range(length):
+            if rest % 3 == 0:
+                for c in (1, 2):
+                    after = line_summary(key + c * POW3[pos], length)
+                    t[0][c][pos] = after[c][0] - before[c][0]
+                    t[1][c][pos] = before[3 - c][1] - after[3 - c][1]
+                    t[2][c][pos] = 1 if after[c][2] else 0
+                    t[3][c][pos] = 1 if after[c][1] > before[c][1] else 0
+            rest //= 3
+        _table_cache[ck] = t
+    return t
+
+
 class Timeout(Exception):
+    pass
+
+
+class VctLimit(Exception):
     pass
 
 
@@ -57,13 +91,16 @@ def _mate_from_tt(score, ply):
 class Engine:
 
     def __init__(self, weights=DEFAULT_WEIGHTS, max_depth=64, time_limit=2.0,
-                 beam=12, vcf_depth=10, leaf_vcf=True):
+                 beam=12, vcf_depth=10, leaf_vcf=True, vct_depth=4, vct_nodes=20000):
         self.weights = weights
         self.max_depth = max_depth
         self.time_limit = time_limit
         self.beam = beam
         self.vcf_depth = vcf_depth
         self.leaf_vcf = leaf_vcf
+        self.vct_depth = vct_depth
+        self.vct_nodes = vct_nodes
+        self.vct_fail = {}
         self.tt = {}
         self.vcf_fail = {}
 
@@ -87,6 +124,8 @@ class Engine:
             self.tt.clear()
         if len(self.vcf_fail) > 500_000:
             self.vcf_fail.clear()
+        if len(self.vct_fail) > 500_000:
+            self.vct_fail.clear()
 
         me = board.side
         op = 3 - me
@@ -106,6 +145,19 @@ class Engine:
             if win is not None:
                 self.info["score"] = VCF_WIN
                 return win
+            if self.vct_depth:
+                # bounded by nodes rather than time so results do not depend on speed
+                self.vct_limit = self.nodes + self.vct_nodes
+                vct = None
+                try:
+                    vct = self.vct_attack(self.vct_depth)
+                except VctLimit:
+                    while len(board.moves) > self.root_len:
+                        board.unplay()
+                if vct is not None:
+                    self.info["score"] = VCF_WIN
+                    self.info["vct"] = True
+                    return vct
             for depth in range(1, max_depth + 1):
                 best_score, best_move = -INF, None
                 alpha = -INF
@@ -216,15 +268,11 @@ class Engine:
             gain = 0
             blocked = 0
             makes_four = False
-            for lid, p in CELL_LINES[idx]:
-                length = LINE_LEN[lid]
-                key = keys[lid]
-                before = line_summary(key, length)
-                mine = line_summary(key + me * p, length)
-                theirs = line_summary(key + op * p, length)
-                gain += mine[me][0] - before[me][0] + theirs[op][0] - before[op][0]
-                blocked += before[op][1] - mine[op][1]
-                if mine[me][2]:
+            for lid, pos, _ in CELL_LINES[idx]:
+                gain_t, blocks_t, four_t, _ = move_table(keys[lid], LINE_LEN[lid])
+                gain += gain_t[me][pos] + gain_t[op][pos]
+                blocked += blocks_t[me][pos]
+                if four_t[me][pos]:
                     makes_four = True
             if op_threes and not blocked and not makes_four:
                 rest.append((gain, idx))
@@ -254,10 +302,8 @@ class Engine:
         found = []
         for idx in board.four_cells(color):
             gain = 0
-            for lid, p in CELL_LINES[idx]:
-                length = LINE_LEN[lid]
-                key = keys[lid]
-                gain += line_summary(key + color * p, length)[color][0] - line_summary(key, length)[color][0]
+            for lid, pos, _ in CELL_LINES[idx]:
+                gain += move_table(keys[lid], LINE_LEN[lid])[0][color][pos]
             found.append((gain, idx))
         found.sort(key=lambda t: (-t[0], t[1]))
         return [idx for _, idx in found]
@@ -300,3 +346,102 @@ class Engine:
                 return m
         self.vcf_fail[board.hash] = depth
         return None
+
+    # ---- victory by continuous threats ----
+    # the attacker (side to move) plays fours and threes; the defender must
+    # answer every three with a block or a counter four
+
+    def vct_attack(self, depth):
+        """First move of a win by continuous threats, or None."""
+        board = self.board
+        me = board.side
+        op = 3 - me
+        mine = board.win_cells(me)
+        if mine:
+            return mine[0]
+        threats = board.win_cells(op)
+        if len(threats) >= 2:
+            return None
+        if threats:
+            board.play(threats[0])
+            ok = self.vct_defend(depth)
+            board.unplay()
+            return threats[0] if ok else None
+        vcf = self.vcf_search(self.vcf_depth)
+        if vcf is not None:
+            return vcf
+        if depth <= 0:
+            return None
+        known = self.vct_fail.get(board.hash)
+        if known is not None and known >= depth:
+            return None
+        for m in self.threat_moves(me):
+            self.nodes += 1
+            if self.nodes > self.vct_limit:
+                raise VctLimit
+            board.play(m)
+            ok = self.vct_defend(depth - 1)
+            board.unplay()
+            if ok:
+                return m
+        self.vct_fail[board.hash] = depth
+        return None
+
+    def vct_defend(self, depth):
+        """Defender to move against pending threats: True if every defense loses."""
+        board = self.board
+        me = board.side
+        att = 3 - me
+        if board.has_four(me):
+            return False
+        wins = board.win_cells(att)
+        if len(wins) >= 2:
+            return True
+        if wins:
+            defenses = wins
+        else:
+            c = board.counts[att]
+            if not (c[THREE] + c[OPEN_THREE]):
+                return False
+            defenses = self.defense_moves(me)
+        for d in defenses:
+            self.nodes += 1
+            if self.nodes > self.vct_limit:
+                raise VctLimit
+            board.play(d)
+            lost = self.vct_attack(depth) is not None
+            board.unplay()
+            if not lost:
+                return False
+        return True
+
+    def threat_moves(self, color):
+        """Cells where color makes a four or a new three, best first."""
+        board = self.board
+        keys = board.line_keys
+        found = []
+        for idx in board.candidates():
+            gain = 0
+            threat = False
+            for lid, pos, _ in CELL_LINES[idx]:
+                gain_t, _, four_t, three_t = move_table(keys[lid], LINE_LEN[lid])
+                gain += gain_t[color][pos]
+                if four_t[color][pos] or three_t[color][pos]:
+                    threat = True
+            if threat:
+                found.append((gain, idx))
+        found.sort(key=lambda t: (-t[0], t[1]))
+        return [idx for _, idx in found]
+
+    def defense_moves(self, color):
+        """Cells where color breaks an opponent three or makes a four."""
+        board = self.board
+        keys = board.line_keys
+        out = []
+        for idx in board.candidates():
+            for lid, pos, _ in CELL_LINES[idx]:
+                _, blocks_t, four_t, _ = move_table(keys[lid], LINE_LEN[lid])
+                if blocks_t[color][pos] > 0 or four_t[color][pos]:
+                    out.append(idx)
+                    break
+        return out

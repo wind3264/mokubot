@@ -105,3 +105,19 @@ def test_search_restores_board(black_to_move):
     snapshot = (list(b.cells), b.hash, [list(c) for c in b.counts[1:]], list(b.moves))
     Engine().best_move(b, time_limit=0.3)
     assert (list(b.cells), b.hash, [list(c) for c in b.counts[1:]], list(b.moves)) == snapshot
+
+
+def test_finds_a_double_three_by_vct():
+    # (7, 8) makes a broken three on the row and an open three on the column
+    black = [(7, 5), (7, 6), (5, 8), (6, 8)]
+    white = [(0, 0), (0, 14), (14, 0), (14, 14)]
+    b = position(black, white)
+    e = Engine()
+    e.board = b
+    e.nodes = 0
+    e.deadline = float("inf")
+    e.vct_limit = float("inf")
+    assert e.vcf_search(10) is None
+    assert e.vct_attack(4) is not None
+    move, e = best(b)
+    assert e.info.get("vct")

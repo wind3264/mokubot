@@ -28,6 +28,16 @@ cases.forEach((c, k) => {
     assert.deepEqual(e.orderMoves(null, true), c.order_root);
     assert.deepEqual(e.orderMoves(null, false), c.order);
     assert.equal(e.vcfSearch(10), c.vcf);
+    const [, v] = setup(c);
+    v.vctLimit = 20000;
+    let vct;
+    try {
+      vct = v.vctAttack(4);
+    } catch (err) {
+      if (!err.vctLimit) throw err;
+      vct = "limit";
+    }
+    assert.equal(vct, c.vct);
     const searcher = new Engine();
     assert.equal(searcher.iterativeDeepening(b, Infinity, c.depth), c.best);
     assert.deepEqual(searcher.info, c.info);

@@ -37,11 +37,11 @@ LINE_CELLS = _build_lines()
 LINE_LEN = [len(cells) for cells in LINE_CELLS]
 NLINES = len(LINE_CELLS)
 
-# for each cell, (line id, 3 ** position in line) of every line through it
+# for each cell, (line id, position in line, 3 ** position) of every line through it
 CELL_LINES = [[] for _ in range(SIZE * SIZE)]
 for _lid, _cells in enumerate(LINE_CELLS):
     for _pos, _idx in enumerate(_cells):
-        CELL_LINES[_idx].append((_lid, POW3[_pos]))
+        CELL_LINES[_idx].append((_lid, _pos, POW3[_pos]))
 
 NEIGHBORS = []
 for _idx in range(SIZE * SIZE):
@@ -177,7 +177,7 @@ class Board:
         keys = self.line_keys
         infos = self.line_infos
         black, white = self.counts[1], self.counts[2]
-        for lid, p in CELL_LINES[idx]:
+        for lid, _, p in CELL_LINES[idx]:
             new = keys[lid] + delta * p
             keys[lid] = new
             before = infos[lid][0]

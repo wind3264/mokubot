@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from eval import evaluate  # noqa: E402
 from game import SIZE, Board  # noqa: E402
-from minimax import Engine  # noqa: E402
+from minimax import Engine, VctLimit  # noqa: E402
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "web", "test", "fixtures.json")
 
@@ -71,6 +71,14 @@ def main():
             "order": e.order_moves(),
             "vcf": e.vcf_search(10),
         }
+        e = engine_at(b)
+        e.vct_limit = 20000
+        try:
+            case["vct"] = e.vct_attack(4)
+        except VctLimit:
+            case["vct"] = "limit"
+            while len(b.moves) > e.root_len:
+                b.unplay()
         depth = 4 if k < 10 else 3 if k < 40 else 2
         case["depth"] = depth
         searcher = Engine()
